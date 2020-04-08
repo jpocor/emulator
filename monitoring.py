@@ -1,14 +1,23 @@
-from tkinter import ttk, messagebox
+import threading
 import tkinter as tk
-from sense_emu import SenseHat
+# import queue
+import pathlib
+import csv
 
+from tkinter import ttk, messagebox
+from sense_emu import SenseHat
+from time import sleep
 from datetime import datetime
+from os import sep
+from copy import deepcopy
 
 # TODO - Crear fichero de configuración y utilizarlo en esta clase
-# Añadir path respecto a la ejecución de este fichero para que en ese mismo directorio cree
-# el fichero *.csv con los datos monitorizados --> utilizar sys u os para encontrar el path actual
+
+    
+    
 
 class Monitor():
+
     def __init__(self, window):
         # VARIABLES DE CONTROL
         self.dimensions = '800x600'
@@ -34,20 +43,45 @@ class Monitor():
         self.period_default = 1000
         # Contador registros
         self.counter = 1
-         # DataStore para gestionar los datos mostrados en la tabla
+         # DataStore para almacenar los datos mostrados en la tabla
         self.data_store = []
+        # Flag para indicar si paramos de registrar datos o no en función del estado del botón
+        self.abortar = True
 
         # Instancia Tkinter para poder gestionar los widgets
         self.window = window
         # Instancia SenseHat para gestionar comunicacion con el emulador
         self.emulator = sense
-
+        
         # Métodos para construir la interfaz
         self.sizer()
         self.title_window()
         self.main_menu()
         self.tabs()
+
+        # Invocamos ejecución en último lugar para tener todas las variables de la aplicación principal disponibles
+        self.bucle()
         
+    
+    def bucle(self):
+        # Subproceso que se ejecutara periodicamente independientemente del loop principal del TKINTER
+        self.window.after(self.period_default, self.process_queue)
+
+    def process_queue(self):
+        if not self.abortar:
+            # Obtener valor del checklist para saber si listamos los valores o mostramos en el entry
+            modo_listar = self.add_in_list.get()
+            self.get_values_from_emu()
+            if modo_listar == 1:
+                sensor = self.medida_selected.get()
+                self.register_in_tree(sensor)
+            elif modo_listar == 0:
+                self.register_in_entry()
+  
+        # Volver a invocar la ejecución de la función ya que solo se ejecuta 1 vez
+        # Utilizaremos el periodo defaulto o bien el que se configura desde la aplicación para volver a ejecutar el metodo
+        self.window.after(self.period_default, self.process_queue)
+
     def sizer(self):
         self.window.geometry(self.dimensions)
 
@@ -85,7 +119,6 @@ class Monitor():
             self.period_default = num
                 
         except ValueError as e:
-            # TODO --> lanzar una ventana message alerta diciendo que solo introduzca valores numéricos
             messagebox.showerror(title='Error datos introducidos', message='Debe introducir un valor numérico - digitos(0-9)')
             print(e)
         
@@ -121,7 +154,7 @@ class Monitor():
         frame.grid(row=0, column=0, columnspan=3, padx=140, pady=20)
 
         # Button Start/Stop
-        self.action_app = tk.Button(frame, **self.style_button['iniciar'], command=self.start_app)
+        self.action_app = tk.Button(frame, **self.style_button['iniciar'], command=self.action_button)
         self.action_app.grid(row=1, columnspan=2)
     
         # Labels
@@ -129,58 +162,65 @@ class Monitor():
         self.marcador = tk.Label(frame, text='1000')
         self.marcador.grid(row=2, column=1)
 
-    def start_app(self):
-        # Obtener estado del botón através del texto indicado --> ultima posición tupla
-        state_button = self.action_app.config('text')[-1]
+    def action_button(self):
+        # Obtener estado del botón
+        state_button = self.state_button()
+        # Flag para indicar Inicio/Parada del botón de acción
+        # Operador ternario
+        self.abortar = False if state_button == 'Iniciar' else True
+
+        # Reescribimos el mensaje de texto que muestra el botón
         if state_button == 'Iniciar':
             self.action_app.config(self.style_button['parar'])
-            self.get_values_from_emu()
         elif state_button == 'Parar':
-            self.abortar = True
             self.action_app.config(self.style_button['iniciar'])
 
-        
+    def state_button(self):
+        # Obtener estado del botón através del texto indicado --> ultima posición tupla
+        return self.action_app.config('text')[-1]
+
     def get_values_from_emu(self):
         self.temp = self.emulator.temperature
         self.pres = self.emulator.pressure
         self.humd = self.emulator.humidity
+
+    def register_in_tree(self, option):
+        # Insert data in tree widget
         now = datetime.now()
         date_time = now.strftime("%Y-%m-%d %H:%M:%S")
-       
-        target_data = self.add_in_list.get()
-        option = self.medida_selected.get()
-        if target_data == 1:
-            # Insert data in tree widget
-            register = {
-                'id': self.counter,
-                'valor': self.temp,
-                'datetime': date_time,
-            }
-            if option == 1:
-                register['tipo'] = 'Temperatura'
-                self.tree.insert('', 'end', text=self.counter, values=(self.temp, date_time, 'Temperatura'))
-            elif option == 2:
-                register['tipo'] = 'Presión'
-                self.tree.insert('', 'end', text=self.counter, values=(self.pres, date_time, 'Presión'))
-            elif option == 3:
-                register['tipo'] = 'Humedad'
-                self.tree.insert('', 'end', text=self.counter, values=(self.humd, date_time, 'Humedad'))
-            
-            self.data_store.append(register)
-            self.counter +=1
-            
-        elif target_data == 0:
-            # Limpiamos el contenido
-            self.medida.delete(0,tk.END)
-            # Añadir valor al Entry del Frame Medidas
-            if option == 1:
-                self.medida.insert(0, self.temp)
-            elif option == 2:
-                self.medida.insert(0, self.pres)
-            elif option == 3:
-                self.medida.insert(0, self.humd)
+        register = {
+            'id': self.counter,
+            'datetime': date_time,
+        }
+
+        if option == 1:
+            register['tipo'] = 'Temperatura'
+            register['valor'] = self.temp
+            self.tree.insert('', 'end', text=self.counter, values=(self.temp, date_time, 'Temperatura'))
+        elif option == 2:
+            register['tipo'] = 'Presión'
+            register['valor'] = self.pres
+            self.tree.insert('', 'end', text=self.counter, values=(self.pres, date_time, 'Presión'))
+        elif option == 3:
+            register['tipo'] = 'Humedad'
+            register['valor'] = self.humd
+            self.tree.insert('', 'end', text=self.counter, values=(self.humd, date_time, 'Humedad'))
         
-        print(self.data_store)
+        self.data_store.append(register)
+        self.counter +=1
+
+    def register_in_entry(self):
+        option = self.medida_selected.get()
+        # Limpiamos el contenido
+        self.medida.delete(0,tk.END)
+
+        # Añadir valor al Entry del Frame Medidas
+        if option == 1:
+            self.medida.insert(0, self.temp)
+        elif option == 2:
+            self.medida.insert(0, self.pres)
+        elif option == 3:
+            self.medida.insert(0, self.humd)
 
     def frame_medidas(self, window):
          # Create a frame container
@@ -217,7 +257,7 @@ class Monitor():
         # Actions Buttons
         self.action_limpiar = tk.Button(frame, text='Limpiar', command=self.reset_table)
         self.action_limpiar.grid(row=5, column=0, sticky=tk.W + tk.E)
-        self.action_media = tk.Button(frame, text='Calcular Media')
+        self.action_media = tk.Button(frame, text='Calcular Media', command=self.mostrar_media)
         self.action_media.grid(row=5, column=1, sticky=tk.W + tk.E)
         self.action_exportar = tk.Button(frame, text='Exportar', command=self.export_list)
         self.action_exportar.grid(row=5, column=2, sticky=tk.W + tk.E)
@@ -232,9 +272,69 @@ class Monitor():
         # Si la tabla TREE no está vacía, la vaciamos
         for element in records:
             self.tree.delete(element)
+        # Reiniciamos contador registros
+        self.counter = 1
+        # Reiniciamos DataStore para almacenar los datos mostrados en la tabla
+        self.data_store = []
+
+    def mostrar_media(self):
+        copia_datos = self.clonar_datos()
+        print(copia_datos)
+        if len(copia_datos) == 0:
+            msg = 'No hay datos para calcular la MEDIA. Por favor haga check en <Añadir a lista> y pulse el botón INICIAR'
+            messagebox.showinfo(message=msg, title="Datos no encontrados")
+        else:
+            totalTemp = 0
+            contadorTemp = 0
+            totalHumd = 0
+            contadorHumd = 0
+            totalPres = 0
+            contadorPres = 0
+            for data in copia_datos:
+                if data['tipo'] == 'Temperatura':
+                    totalTemp += data['valor']
+                    contadorTemp += 1
+                if data['tipo'] == 'Presión':
+                    totalPres += data['valor']
+                    contadorPres += 1
+                if data['tipo'] == 'Humedad':
+                    totalHumd += data['valor']
+                    contadorHumd += 1
+
+            mediaTemp = totalTemp / contadorTemp if contadorTemp else 0.0
+            mediaPres = totalPres / contadorPres if contadorPres else 0.0
+            mediaHumd = totalHumd / contadorHumd if contadorHumd else 0.0
+
+            msg = 'La media de los sensores son:  TEMP: {}                 PRES: {}       HUMD: {}'.format(mediaTemp, mediaPres, mediaHumd)
+            messagebox.showinfo(message=msg, title='Media Sensores')
+            
+    def clonar_datos(self):
+        return deepcopy(self.data_store)
 
     def export_list(self):
-        pass
+        # sep : DISTINTGUIR EL SISTEMA OPERATIVO ya que el path para la ruta de ficheros es distinto en WIN '\' y en LINUX '/'
+        current_path = str(pathlib.Path().absolute()) + sep
+        now = datetime.now()
+        name_file_csv = now.strftime("%Y%m%d_%H%M%S")
+        extension = '.csv'
+        file_path = current_path + 'monitoring_' + name_file_csv + extension
+
+        copy_store = deepcopy(self.data_store)
+        if len(copy_store) == 0:
+            msg = 'No hay datos para listar. Por favor activar registro de datos en lista. Haga check en <Añadir a lista> y pulse el botón INICIAR'
+            messagebox.showinfo(message=msg, title="Datos no encontrados")
+        else:
+            msg = '¿Desea generar un fichero en formato CSV en el siguiente path:\n ' + file_path
+            selecciona = messagebox.askokcancel(message=msg, title="Crear fichero CSV")
+            if selecciona:
+                with open(file_path, 'w', newline='') as fh:
+                    fieldnames = ['id', 'valor', 'datetime', 'tipo']
+                    thewritter = csv.DictWriter(fh, fieldnames=fieldnames)
+                    thewritter.writeheader()
+                    for dato in copy_store:
+                        thewritter.writerow(dato)
+        
+
 
 
 
