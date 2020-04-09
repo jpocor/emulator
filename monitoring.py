@@ -1,8 +1,14 @@
 import threading
 import tkinter as tk
-# import queue
 import pathlib
 import csv
+
+import tkinter
+
+from matplotlib.backends.backend_tkagg import (FigureCanvasTkAgg, NavigationToolbar2Tk)
+from matplotlib.figure import Figure
+import matplotlib.dates as mdates
+from matplotlib.dates import DateFormatter
 
 from tkinter import ttk, messagebox
 from sense_emu import SenseHat
@@ -10,6 +16,9 @@ from time import sleep
 from datetime import datetime
 from os import sep
 from copy import deepcopy
+from random import choice
+
+from config_plot import ConfigPlot
 
 # TODO - Crear fichero de configuración y utilizarlo en esta clase
 
@@ -47,11 +56,20 @@ class Monitor():
         self.data_store = []
         # Flag para indicar si paramos de registrar datos o no en función del estado del botón
         self.abortar = True
+        # Inicializamos valores
+        self.temp = 0.0
+        self.pres = 0.0
+        self.humd = 0.0
+        self.x = []
+        self.y = []
 
         # Instancia Tkinter para poder gestionar los widgets
         self.window = window
         # Instancia SenseHat para gestionar comunicacion con el emulador
         self.emulator = sense
+
+        # Instanciamos clase configuración datos
+        self.data_config_plot = ConfigPlot()
         
         # Métodos para construir la interfaz
         self.sizer()
@@ -146,7 +164,120 @@ class Monitor():
         self.frame_historico(win_reference)
 
     def container_widgets_grafica(self, win_reference):
-        pass
+        
+        # Sensor seleccionado (1-> Temp, 2-> Pres, 3-> Hume)
+        self.sensor_selected = str(self.medida_selected.get())
+        self.config = self.data_config_plot.tags_canvas()
+
+        valor_sensor = self.measure()
+        
+        # Añadir un valor inicial a lista de datos
+        self.x.append(self.current_time())
+        self.y.append(valor_sensor[self.sensor_selected])
+
+        # Añadir lienzo Canvas
+        fig = Figure(facecolor=ConfigPlot.FACECOLOR)
+
+        axs = fig.add_subplot(ConfigPlot.SUBPLOT)    
+        axs.grid(True)
+        self.ax = axs
+
+        # Objeto Line2D --> [0] AxesSubplot  
+        self.lines = axs.plot([], [], **self.data_config_plot.get_style_sensor(self.sensor_selected))[0]
+
+        # Configurar nombres Titulo y Ejes
+        axs.set_title(self.config[self.sensor_selected][ConfigPlot.TITLE])
+        axs.set_xlabel(ConfigPlot.LABEL_X)
+        axs.set_ylabel(self.config[self.sensor_selected][ConfigPlot.LABEL])
+
+        # Area de dibujo
+        self.canvas = FigureCanvasTkAgg(fig, master=win_reference)
+        self.canvas.get_tk_widget().place(**self.data_config_plot.dimensions_canvas())
+        self.canvas.draw()
+
+        # Toolbar
+        toolbar = NavigationToolbar2Tk(self.canvas, win_reference)
+        toolbar.update()
+        self.canvas.get_tk_widget().pack(side=tkinter.TOP, fill=tkinter.BOTH, expand=1)
+
+        # Iniciar la recursividad para recoger y representar los datos en tiempo real
+        self.window.after(self.period_default, self.pintar_valores)
+        
+    def measure(self):
+        # Devolver diccionario referenciando valor del sensor según sensor seleccionado
+        return {
+            "1": self.temp,
+            "2": self.pres,
+            "3": self.humd
+        }
+
+    def pintar_valores(self):
+        # Sensor seleccionado
+        sensor = str(self.medida_selected.get())
+        
+        self.lines = self.ax.plot(self.x, self.y, **self.data_config_plot.get_style_sensor(sensor))[0]
+        
+        valor_sensor = self.measure()
+
+        # Refresacar titulos por si se cambia la seleción del sensor
+        self.ax.set_title(self.config[sensor][ConfigPlot.TITLE])
+        self.ax.set_ylabel(self.config[sensor][ConfigPlot.LABEL])
+ 
+        self.ax.set_xlim(left=self.current_time()-5, right=self.current_time())
+        self.ax.set_ylim(top=valor_sensor[sensor]+1, bottom=valor_sensor[sensor]-1)
+
+        for label in self.ax.xaxis.get_ticklabels():
+            label.set_rotation(ConfigPlot.ROTATION_X)
+        
+        # Controlar tamaño lista para representar la gráfica
+        self.check_size_list()
+        
+        # Limitar representación a los últimos valores
+        self.lines.set_xdata(self.x)
+        self.lines.set_ydata(self.y)
+
+        # Mostrar la gráfica
+        self.canvas.draw()
+        
+        # Recursividad para pintar valores
+        self.window.after(self.period_default, self.pintar_valores)
+
+    def check_size_list(self):
+        # Para representar los 3 sensores utilizar listas distintas para la captura de los valores
+        # Ahora en primera aproximación utilizaremos la misma lista, con ajuste dinamico de las escalas
+
+        self.x = self.define_total_items_list(self.x, ConfigPlot.TIME)
+        self.y = self.define_total_items_list(self.y, ConfigPlot.SENSOR)
+
+    def define_total_items_list(self, my_list, tipo):
+        # Sensor seleccionado
+        sensor = str(self.medida_selected.get())
+        valor_sensor = self.measure()
+
+        if len(my_list) < 10:
+            if tipo == ConfigPlot.TIME:
+                my_list.append(self.current_time())
+            else:
+                my_list.append(valor_sensor[sensor])
+        else:
+            del my_list[0]
+            if tipo == ConfigPlot.TIME:
+                my_list.append(self.current_time())
+            else:
+                my_list.append(valor_sensor[sensor])
+
+        return my_list
+
+    def current_time(self):
+        # Objeto fecha y tiempo
+        now = datetime.now()
+
+        # Formatear string de salida
+        time_string = now.strftime("%M%S")
+
+        # Eje X Marca de Tiempo estará representado por un numero que indicara MinSeg. Los minutos no se completan con 0.
+        # Ejemlo --> 4513 = Min 45 Seg 13, 256 = Min 02, Seg 56
+        return int(time_string)
 
     def frame_control(self, window):
         # Create a frame container
